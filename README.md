@@ -30,7 +30,7 @@ flowchart LR
         subgraph AZB["Zona B"]
             EC2B["EC2<br/>contenedor API :8080"]
         end
-        ASG{{"Auto Scaling Group<br/>min 2 · max 4 · CPU 50 %"}}
+        ASG{{"Auto Scaling Group<br/>min 2 · max 4 · CPU 60 % · 10 s"}}
     end
 
     ALB --> EC2A
@@ -42,7 +42,7 @@ flowchart LR
 
 - El navegador **solo habla con CloudFront**. Todas las llamadas a la API usan rutas relativas (`/api/...`), y como todo sale del mismo dominio **no hace falta CORS**.
 - El **ALB solo acepta tráfico de CloudFront** (managed prefix list), y las **instancias solo aceptan tráfico del ALB** (security group).
-- Cada EC2 clona este repo al arrancar (user data), construye la imagen de la API y la corre en Docker.
+- Cada EC2 arranca desde una AMI con Docker y la API configurados. No usa user data ni descarga código al escalar.
 
 Las razones detrás de cada decisión están en [docs/arquitectura.md](docs/arquitectura.md).
 
@@ -57,9 +57,7 @@ Las razones detrás de cada decisión están en [docs/arquitectura.md](docs/arqu
 ├── scripts/
 │   ├── infra-up.sh          despliega todo (Terraform + frontend) con un comando
 │   ├── infra-destroy.sh     borra todo (pide confirmación)
-│   ├── user-data.sh         se pega en el launch template (despliegue por consola)
-│   ├── setup-instance.sh    prepara la EC2 (Docker, git) y levanta la API
-│   ├── deploy-api.sh        build + reinicio del contenedor de la API
+│   ├── build-api-ami.sh     construye una AMI desde el backend local mediante una EC2 temporal
 │   ├── deploy-frontend.sh   build del frontend + subida a S3 + invalidación
 │   ├── demo-check.sh        comprueba reparto y caché desde la terminal
 │   └── tf-outputs.sh        funciones para leer los outputs de Terraform
@@ -79,6 +77,7 @@ Las razones detrás de cada decisión están en [docs/arquitectura.md](docs/arqu
 | `GET` | `/api/info` | `instance_id`, `availability_zone`, `region`, `hostname`, `version`, `timestamp` |
 | `POST` | `/api/spell` | Hechizo aleatorio (nombre, elemento, poder 1-100) y quién lo lanzó |
 | `POST` | `/api/stress` | Body `{"seconds": 60}`. Sube la CPU en segundo plano (máx. 300 s). `202` aceptado / `409` ya hay uno activo |
+| `POST` | `/api/stress/stop` | Sin body. Cancela el estrés en la instancia que responde; `200` detenido / `202` deteniéndose |
 | `GET` | `/api/grimoires` | Lista estática de grimorios de ejemplo |
 
 La metadata de la instancia se lee con **IMDSv2**. Si IMDS no responde en 1 s (en local), se usan valores simulados (`local-xxxx`, `local-az`).
@@ -91,7 +90,7 @@ La metadata de la instancia se lee con **IMDSv2**. Si IMDS no responde en 1 s (e
 | `STRESS_MAX_SECONDS` | `300` | Tope de `/api/stress` |
 | `LOG_LEVEL` | `INFO` | `DEBUG` también registra los health checks |
 
-Para cambiarlas, copia `.env.example` como `.env`. Docker Compose y `deploy-api.sh` lo leen. El `.env` está en `.gitignore`.
+Para desarrollo local, copia `.env.example` como `.env`: Docker Compose lo lee y Git lo ignora. En AWS, la configuración se prepara al construir la AMI; no se copian secretos del `.env` a la imagen.
 
 ---
 
@@ -101,7 +100,7 @@ Para cambiarlas, copia `.env.example` como `.env`. Docker Compose y `deploy-api.
 |---|---|
 | [Docker](https://docs.docker.com/get-docker/) con Compose v2 | Entorno local y build de imágenes |
 | [Node.js](https://nodejs.org/) ≥ 22 (recomendado el LTS) | Desarrollar o compilar el frontend (opcional: los scripts pueden compilar dentro de Docker) |
-| [Python](https://www.python.org/) ≥ 3.12 | Correr los tests del backend sin Docker |
+| [Python](https://www.python.org/) ≥ 3.12 | Empaquetar el backend para construir la AMI y ejecutar sus tests |
 | [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | Credenciales, subir el frontend a S3 e invalidar CloudFront |
 | [Terraform](https://developer.hashicorp.com/terraform/install) ≥ 1.10 | Crear y destruir la infraestructura de AWS |
 | Git y una terminal bash | En Windows: Git Bash o WSL |
@@ -158,97 +157,51 @@ npm run dev        # http://localhost:5173, reenvía /api a localhost:8080
 
 ## Despliegue en AWS
 
-> ⚠️ **Esto genera costos** desde el primer minuto (ALB, IPv4 públicas e instancias). Antes de empezar lee [Costos y limpieza](#costos-y-limpieza) y crea una alerta en AWS Budgets.
-
-Hay dos caminos para crear la misma arquitectura:
-
-- **Opción A, Terraform (recomendada):** un comando crea todo y otro lo borra todo. Ideal para ensayar o para tener la demo lista antes de una clase.
-- **Opción B, consola:** se crea a mano, paso a paso, para entender cada pieza.
-
-En ambos casos, primero:
-
-### Paso 0: Sube tu copia del repo a GitHub
-
-Las instancias clonan el repo al arrancar, así que **debe ser público** (o tienes que adaptar el user data).
-
-### Opción A: Terraform
+El código se construye desde tu copia local: no hace falta un repositorio público. Necesitas AWS CLI con credenciales, Terraform, Bash (Git Bash o WSL en Windows), Python 3 y Node o Docker para compilar el frontend.
 
 ```bash
-# 1. Configura tus valores (repo y perfil de AWS CLI)
 cp infra/terraform.tfvars.example infra/terraform.tfvars
-#    edita repo_url y aws_profile
-
-# 2. Despliega todo: infraestructura + frontend, y espera a que las instancias estén sanas
+# Edita aws_profile y, si corresponde, region/prefix.
 bash scripts/infra-up.sh
 ```
 
-`infra-up.sh` hace `terraform init` y `terraform apply` (te pide confirmar). Después compila y sube el frontend, y espera a que haya 2 instancias `healthy`. Al final imprime la URL de CloudFront. Tarda de **10 a 15 minutos**: CloudFront es lo más lento.
+El flujo tiene dos fases porque el constructor necesita red y permisos antes de poder crear la AMI:
 
-El código de [`infra/`](infra/) replica uno a uno los pasos de la guía de consola, con comentarios que explican cada decisión. Los archivos clave para mostrar en clase son `compute.tf` (launch template, ASG y health check ELB) y `cloudfront.tf`.
+1. Terraform prepara subredes, salida a internet, security group, IAM y target group. Esta fase usa targets explícitos; después siempre se ejecuta un apply completo.
+2. `build-api-ami.sh` crea una EC2 temporal sin user data. Por Session Manager instala Docker, copia el backend local, construye la imagen y configura el contenedor con `restart=always`, el nombre del ASG y el target group. Comprueba `/health`, detiene el servidor y captura la AMI. La EC2 temporal se elimina al terminar.
+3. El ID se guarda en `infra/api-ami.auto.tfvars.json`, ignorado por Git. Terraform aplica el resto de la arquitectura y configura el launch template con esa AMI, **sin user data**.
+4. Se publica el frontend en S3 y se invalida CloudFront. El script espera a que las instancias estén sanas.
 
-| Archivo | Qué crea |
+Construir la AMI y desplegar CloudFront puede tardar varios minutos. Ese trabajo se hace antes de la clase: **al escalar, las EC2 solo arrancan el sistema y el contenedor ya preparados**.
+
+### Scripts que se conservan
+
+| Script | Función |
 |---|---|
-| `network.tf` | VPC, 2 subredes públicas en 2 AZ (y la versión privada con NAT, comentada) |
-| `security_groups.tf` | ALB ← prefix list de CloudFront; instancias ← ALB:8080 |
-| `iam.tf` | Rol de las instancias con SSM (sin SSH) |
-| `compute.tf` | Launch template (AL2023, IMDSv2 hop 2), ASG 2/2/4 con health check ELB y target tracking CPU 50 % |
-| `alb.tf` | ALB, target group (`/health`) y listener |
-| `frontend.tf` | Bucket privado, OAC y política del bucket |
-| `cloudfront.tf` | Distribución con 2 orígenes, `/api/*` sin caché y errores de SPA |
-| `outputs.tf` | URL, bucket, distribución, ALB y ASG (los usan los scripts) |
+| `infra-up.sh` | Prepara la base, construye la AMI, aplica toda la infraestructura y publica el frontend |
+| `build-api-ami.sh` | Construye solamente la AMI, con la base de infraestructura ya creada |
+| `deploy-frontend.sh` | Compila React, sube a S3 e invalida CloudFront |
+| `demo-check.sh` | Comprueba reparto de peticiones y caché |
+| `infra-destroy.sh` | Borra los recursos de Terraform tras confirmar; las AMI y snapshots requieren limpieza adicional |
+| `tf-outputs.sh` | Funciones compartidas para leer URL, perfil y nombres desde Terraform |
 
-Con la infraestructura de Terraform, los scripts leen los outputs solos y no hace falta pasarles argumentos:
-
-```bash
-bash scripts/demo-check.sh       # comprueba reparto y caché
-bash scripts/deploy-frontend.sh  # vuelve a publicar el frontend
-bash scripts/infra-destroy.sh    # BORRA TODO (pide escribir "destruir")
-```
-
-> 🔒 `infra/terraform.tfvars` y `terraform.tfstate` están en `.gitignore`: el estado contiene IDs de tu cuenta y **nunca** debe subirse a un repo público. El estado es local (en `infra/`), así que destruye la infraestructura desde la misma máquina en la que la creaste.
-
-### Opción B: Consola
-
-La guía detallada está en **[docs/consola-aws.md](docs/consola-aws.md)**. Antes de empezar, en `scripts/user-data.sh` cambia `REPO_URL` por la URL de tu repo. El orden es importante:
-
-#### Paso 1: Infraestructura y API
-
-Sigue [docs/consola-aws.md](docs/consola-aws.md), pasos 1 a 7:
-
-1. VPC con 2 subredes públicas en 2 AZ
-2. Security groups (ALB ← CloudFront, EC2 ← ALB)
-3. Rol IAM de la instancia (SSM, sin SSH)
-4. Launch template (Amazon Linux 2023, IMDSv2 con hop limit 2 y el user data)
-5. Target group (HTTP 8080, health check `/health`)
-6. Application Load Balancer
-7. Auto Scaling Group (2/2/4, health check **ELB**, target tracking CPU 50 %)
-
-Al crear el ASG, cada instancia ejecuta el user data: instala Docker, clona el repo y levanta la API. **Tarda unos 3 a 5 minutos** hasta que los targets aparecen `healthy` en el target group.
-
-#### Paso 2: Frontend (S3 + CloudFront)
-
-Sigue los pasos 8 y 9 de la guía: crea el bucket privado y la distribución de CloudFront (con OAC y el behavior `/api/*` → ALB). Después sube el frontend:
-
-```bash
-bash scripts/deploy-frontend.sh <nombre-del-bucket> <id-de-la-distribucion>
-```
-
-El script compila el frontend (con Node, o con Docker si no hay Node), hace `aws s3 sync --delete` e invalida la caché de CloudFront.
-
-> ⏳ **CloudFront tarda varios minutos en desplegarse** la primera vez (estado *Deploying*). Hasta que no figure la fecha en *Last modified*, la URL puede devolver errores o contenido viejo.
-
-#### Paso 3: Comprobar
-
-```bash
-bash scripts/demo-check.sh https://dxxxxxxxxxxxxx.cloudfront.net
-```
-
-Deberías ver respuestas de **dos instancias en dos AZ distintas** y el estático pasando de `Miss` a `Hit`.
+Todos se ejecutan desde tu computadora. Ninguno se ejecuta al escalar el ASG.
 
 ### Actualizar la API
 
-- **Forma recomendada:** en EC2 → Auto Scaling Groups → tu ASG → *Instance refresh* → *Start* (o con la CLI: `aws autoscaling start-instance-refresh --auto-scaling-group-name grimorios-asg`). El ASG reemplaza las instancias de a poco, sin cortar el servicio. Cada instancia nueva clona el código más reciente, y `/api/info` muestra el commit en `version`.
-- **Forma manual** (para entender el contraste): conéctate con *Session Manager* a cada instancia y ejecuta `sudo bash /opt/grimorios/scripts/deploy-api.sh`.
+```bash
+# Desde la raíz del repo, con el backend local actualizado:
+bash scripts/build-api-ami.sh
+terraform -chdir=infra apply
+```
+
+El cambio de AMI inicia una renovación progresiva de instancias. Un instance refresh sin construir una AMI nueva reutiliza el código de la imagen anterior.
+
+Opcionalmente, `BASE_AMI_ID=ami-... bash scripts/build-api-ami.sh` permite aprovechar una AMI propia de esta demo como caché. Sin esa variable, construye desde Amazon Linux 2023 limpio. Cada AMI contiene la configuración del grupo y target group de este despliegue.
+
+Para cambiar solo la interfaz: `bash scripts/deploy-frontend.sh`. Para comprobar: `bash scripts/demo-check.sh`. La [guía de consola](docs/consola-aws.md) indica dónde observar cada recurso.
+
+No subas `*.tfvars`, `*.auto.tfvars.json`, estados ni planes de Terraform al repo. Conserva el estado local para poder administrar y destruir este despliegue.
 
 ---
 
@@ -275,11 +228,14 @@ Abre la URL de CloudFront en el proyector y, al lado, la consola de AWS.
 
 ### Acto 3: Modo estrés, el ASG escala (panel C)
 
-- **Qué hacer:** con 180 a 300 s, presiona **"Desatar estrés"** varias veces, hasta que **todas** las instancias respondan "ya está estresada".
-- **Qué observar:**
-  - En **CloudWatch** (o en la pestaña *Monitoring* del ASG), la CPU promedio supera el 50 %.
-  - En unos **5 a 10 minutos**, el **ASG → Activity** muestra "Launching a new EC2 instance" y aparece una tercera instancia en el panel A.
-- **Mensaje:** target tracking ajusta la capacidad para mantener la métrica cerca del objetivo. El escalado **no es instantáneo**: hay métricas cada minuto, alarmas con varios datos y el arranque de la instancia. Al terminar, el *scale-in* tarda más, porque es conservador a propósito.
+- Deja 300 s y pulsa varias veces hasta cargar ambas instancias. Una al 100 % y otra al 0 % solo suman un promedio del 50 %.
+- La carga termina sola al cumplirse el tiempo. Para terminar antes, pulsa **Parar estrés**: confirma la parada en las instancias activas y avisa si alguna no pudo confirmarse.
+- La API publica CPU real cada 10 s; una muestra promedio >60 % activa la ampliación. El ASG agrega una instancia por ajuste, hasta un máximo de 4, con warmup de 60 s.
+- El panel consulta `/api/scaling`: muestra “Desplegando…” cuando aumenta la capacidad deseada y “Lista para atender” cuando la EC2 está InService y el ALB la considera healthy.
+- Buscamos ver capacidad adicional alrededor de un minuto; AWS no garantiza ese plazo. Primero se detecta la carga y después arranca la EC2 desde la AMI.
+- Al terminar, CPU nativa de EC2 <10 % durante cinco minutos permite retirar capacidad hasta el mínimo de 2.
+
+El [contrato de estado y métricas](docs/scaling-api.md) detalla las respuestas. Las métricas y alarmas de alta resolución generan cargos adicionales de CloudWatch.
 
 ### Acto 4: El caché de CloudFront (panel D)
 
@@ -316,7 +272,7 @@ Para estimar el costo de tu caso usa la **[AWS Pricing Calculator](https://calcu
 bash scripts/infra-destroy.sh
 ```
 
-El script pide escribir `destruir` para confirmar. Después ejecuta `terraform destroy`, que vacía el bucket solo (`force_destroy`) y borra todo en el orden correcto. Tarda varios minutos, porque CloudFront primero se deshabilita y luego se borra.
+El script pide escribir `destruir` para confirmar. Las AMI creadas por el constructor y sus snapshots no pertenecen al estado de Terraform: elimínalos también desde EC2 cuando ninguna instancia los necesite. Después ejecuta `terraform destroy`, que vacía el bucket solo (`force_destroy`) y borra todo en el orden correcto. Tarda varios minutos, porque CloudFront primero se deshabilita y luego se borra.
 
 **Si lo creaste en la consola**, el orden importa, porque algunos recursos dependen de otros. La lista completa está en [docs/consola-aws.md → Limpieza](docs/consola-aws.md#limpieza):
 
@@ -341,9 +297,9 @@ Al final revisa **Billing → Bills** y **EC2 → Elastic IPs / Load balancers /
   ```bash
   sudo docker ps
   curl -s localhost:8080/health
-  sudo tail -50 /var/log/cloud-init-output.log   # salida del user data
+  sudo journalctl -u docker -b --no-pager | tail -50
   ```
-- **El user data todavía corre:** el primer arranque tarda unos minutos (instalación y build). Si el *health check grace period* del ASG es muy corto, el ASG mata las instancias antes de que terminen y entra en un ciclo de reemplazos. Súbelo a 300 s.
+- **La AMI no tiene la aplicación preparada:** revisa la imagen seleccionada en el launch template. El contenedor debe existir y tener `restart=always`; no hay user data que lo instale. La gracia de salud de 120 s protege el arranque inicial.
 - **Las instancias no tienen salida a internet:** necesitan una IPv4 pública (auto-assign en las subredes) y una ruta a un Internet Gateway, para hacer `dnf install`, `git clone` y bajar imágenes de Docker.
 
 ### `/api/info` muestra `local-xxxx` y `local-az` en AWS

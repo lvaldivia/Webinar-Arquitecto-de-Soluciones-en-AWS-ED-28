@@ -85,3 +85,14 @@ def test_stress_rejects_second_request_while_active(client):
 def test_stress_rejects_invalid_seconds(client):
     assert client.post("/api/stress", json={"seconds": 0}).status_code == 422
     assert client.post("/api/stress", json={"seconds": "mucho"}).status_code == 422
+
+
+def test_stop_stress_is_idempotent_and_allows_restart(client):
+    assert client.post("/api/stress", json={"seconds": 300}).status_code == 202
+    response = client.post("/api/stress/stop")
+    assert response.status_code == 200
+    assert response.json()["status"] == "stopped"
+    assert response.json()["instance_id"] == FAKE_METADATA["instance_id"]
+    assert client.get("/api/info").json()["stress_remaining_seconds"] == 0
+    assert client.post("/api/stress/stop").json()["status"] == "stopped"
+    assert client.post("/api/stress", json={"seconds": 30}).status_code == 202

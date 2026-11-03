@@ -29,4 +29,5 @@ Thumbs.db
 crash.log
 # Tus valores (perfil, repo); se versiona solo el ejemplo.
 *.tfvars
+*.auto.tfvars.json
 !*.tfvars.example

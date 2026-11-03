@@ -536,6 +536,32 @@ h3 {
   box-shadow: 0 0 18px rgba(255, 78, 42, 0.25);
 }
 
+.scaling-status {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid #488a6b;
+  border-radius: 10px;
+  background: #14251f;
+  color: #d4f5e1;
+}
+
+.stress-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.scaling-deploying {
+  border-color: #e4ae53;
+  background: #302619;
+  color: #ffe1a6;
+}
+
+.scaling-status p { margin: 0.5rem 0; }
+.scaling-status ul { margin: 0; padding: 0; list-style: none; }
+.scaling-status li { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.4rem; font-size: 0.8rem; }
+
 .stress-steps {
   font-size: 0.88rem;
 }

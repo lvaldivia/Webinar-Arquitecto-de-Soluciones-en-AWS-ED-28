@@ -39,3 +39,18 @@ export interface StressBusy extends Caster {
 }
 
 export type StressResponse = StressAccepted | StressBusy;
+
+export interface StressStopResponse extends Caster {
+  status: "stopped" | "stopping";
+  remaining_seconds: number;
+}
+
+export interface ScalingStatus {
+  status: "ok" | "disabled";
+  desired: number;
+  minimum: number;
+  maximum: number;
+  ready: number;
+  deploying: number;
+  instances: Array<Caster & { state: "ready" | "deploying" | "terminating" }>;
+}

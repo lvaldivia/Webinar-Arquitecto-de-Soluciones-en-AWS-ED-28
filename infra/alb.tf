@@ -23,10 +23,10 @@ resource "aws_lb_target_group" "api" {
   health_check {
     path                = "/health" # endpoint liviano, sin dependencias externas
     matcher             = "200"
-    interval            = 10
-    timeout             = 5
+    interval            = 5
+    timeout             = 2
     healthy_threshold   = 2
-    unhealthy_threshold = 2 # 2 fallos x 10 s = ~20 s para marcarla unhealthy
+    unhealthy_threshold = 2 # comprobación rápida para la demo
   }
 }
 

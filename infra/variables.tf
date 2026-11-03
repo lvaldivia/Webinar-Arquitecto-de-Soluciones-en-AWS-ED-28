@@ -22,26 +22,21 @@ variable "tags" {
   default     = {}
 }
 
-variable "repo_url" {
-  description = "URL HTTPS del repo PÚBLICO que clonan las instancias al arrancar."
-  type        = string
-
-  validation {
-    condition     = startswith(var.repo_url, "https://") && !strcontains(var.repo_url, "TU-USUARIO")
-    error_message = "repo_url debe ser la URL https de TU repo público (p. ej. https://github.com/usuario/repo.git)."
-  }
-}
-
-variable "repo_branch" {
-  description = "Rama del repo que se despliega."
-  type        = string
-  default     = "main"
-}
-
 variable "instance_type" {
   description = "Tipo de instancia de la API."
   type        = string
   default     = "t3.micro"
+}
+
+variable "api_ami_id" {
+  description = "AMI con Docker y grimorio-api. El constructor guarda su ID en api-ami.auto.tfvars.json."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.api_ami_id == null ? true : can(regex("^ami-[0-9a-f]+$", var.api_ami_id))
+    error_message = "api_ami_id debe ser un ID de AMI válido o null."
+  }
 }
 
 variable "vpc_cidr" {

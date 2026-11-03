@@ -4,6 +4,7 @@ import { GrimoireResponder } from "./components/GrimoireResponder";
 import { ParticleCanvas } from "./components/ParticleCanvas";
 import { SpellCaster } from "./components/SpellCaster";
 import { StressMode } from "./components/StressMode";
+import { useScalingStatus } from "./useScalingStatus";
 
 // Mapa de la arquitectura: cada paso indica qué panel lo demuestra.
 function ArchitectureStrip() {
@@ -25,6 +26,7 @@ function ArchitectureStrip() {
 }
 
 export default function App() {
+  const scalingView = useScalingStatus();
   return (
     <>
       <ParticleCanvas />
@@ -40,9 +42,9 @@ export default function App() {
         <ArchitectureStrip />
 
         <main className="grid">
-          <GrimoireResponder />
+          <GrimoireResponder {...scalingView} />
           <SpellCaster />
-          <StressMode />
+          <StressMode {...scalingView} />
           <CacheMirror />
         </main>
 

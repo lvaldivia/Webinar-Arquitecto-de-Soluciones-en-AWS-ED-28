@@ -1,7 +1,5 @@
-# Copia este archivo como terraform.tfvars y ajusta los valores.
+# Copia este archivo como terraform.tfvars y ajusta el perfil.
 # terraform.tfvars está en .gitignore: no se sube al repo.
-
-repo_url = "https://github.com/TU-USUARIO/TU-REPO.git"
 
 # Perfil de AWS CLI (aws configure --profile <nombre>). Quita la línea para usar el default.
 aws_profile = "default"
@@ -9,6 +7,8 @@ aws_profile = "default"
 # region        = "us-east-1"
 # prefix        = "grimorios"
 # instance_type = "t3.micro"
+# scripts/build-api-ami.sh genera api-ami.auto.tfvars.json desde el backend local.
+# El ID de AMI lo escribe automáticamente el constructor; no lo fijes aquí.
 # tags = {
 #   Curso = "arquitectura-aws"
 # }

@@ -56,7 +56,7 @@ Usuarios → CloudFront ─┬─ (default) → S3 privado (frontend estático, 
 **Concepto, dos funciones distintas:**
 
 1. **Autorreparación:** el ASG mantiene siempre la capacidad deseada. Si una instancia muere, lanza otra.
-2. **Escalado:** una política de **target tracking** mantiene la **CPU promedio cerca del 50 %**. Agrega instancias si sube y las quita si baja.
+2. **Escalado:** una política por pasos agrega una EC2 con CPU promedio >60 % durante un período de 10 s. La señal se publica desde la API en CloudWatch con alta resolución. CPU nativa <10 % durante cinco minutos permite retirar capacidad.
 
 ### El error típico: `health check type = EC2`
 
@@ -71,27 +71,27 @@ Con el check EC2, la capacidad baja de forma silenciosa. Por eso activamos **ELB
 
 ### Grace period
 
-Una instancia nueva necesita varios minutos para arrancar: instalar Docker, clonar y construir la imagen. Mientras tanto, `/health` falla. El **health check grace period** (300 s) evita que el ASG la mate antes de tiempo. Si es demasiado corto, el ASG entra en un **ciclo de reemplazos infinito**.
+Una instancia nueva debe arrancar el sistema y el contenedor ya configurados en la AMI. El **health check grace period** (120 s) evita que el ASG la reemplace antes de tiempo si la aplicación todavía no responde. No es una espera obligatoria para recibir tráfico: el ALB la incorpora cuando pasa sus comprobaciones.
 
 ### ¿Por qué el escalado tarda minutos?
 
 1. CloudWatch publica la métrica de CPU cada **1 minuto** (con monitoreo detallado) o cada **5 minutos** (básico).
-2. La alarma de target tracking necesita **varios datos seguidos** por encima del objetivo, para no reaccionar a picos.
-3. La instancia nueva debe arrancar, ejecutar el user data y pasar el health check.
+2. La alarma rápida usa una muestra de CPU de 10 s por encima del 60 %; la publicación y evaluación añaden demora.
+3. La instancia nueva debe arrancar desde la AMI y pasar el health check; no ejecuta user data.
 
 El **scale-in** (quitar instancias) es más lento todavía, a propósito: quitar capacidad por error es peor que mantenerla un rato de más.
 
-**En la demo:** el panel C (`POST /api/stress`) lleva la CPU de la instancia al 100 % con **un proceso por núcleo**. Se usan procesos y no hilos porque, por el GIL de Python, varios hilos no ocupan varios núcleos. Como el objetivo es la CPU **promedio**, hay que estresar todas las instancias: con 2 instancias, una al 100 % y otra al 0 % dan 50 %, que no supera el objetivo.
+**En la demo:** el panel C (`POST /api/stress`) lleva la CPU de la instancia al 100 % con **un proceso por núcleo**. Se usan procesos y no hilos porque, por el GIL de Python, varios hilos no ocupan varios núcleos. Como el objetivo es la CPU **promedio**, hay que estresar todas las instancias: con 2 instancias, una al 100 % y otra al 0 % dan 50 %, que no supera el umbral del 60 %.
 
-## Launch template, user data e inmutabilidad
+## Launch template, AMI e inmutabilidad
 
-**Decisión:** el launch template define todo lo necesario para crear una instancia idéntica: AMI, tipo, rol, security group, IMDS y **user data**. El user data clona este repo y ejecuta [`setup-instance.sh`](../scripts/setup-instance.sh).
+**Decisión:** el launch template usa una AMI construida desde el backend local y no tiene user data. El constructor configura Docker y el contenedor una sola vez; Docker lo levanta al arrancar el sistema.
 
 **Concepto:**
 
 - Las instancias son **ganado, no mascotas**: ninguna es especial y cualquiera se puede reemplazar. Nadie entra a configurarlas a mano.
-- Para desplegar una versión nueva, lo ideal es un **Instance refresh**: el ASG reemplaza las instancias de a poco por otras nuevas que arrancan con el código actual. Actualizar "a mano" con `deploy-api.sh` funciona, pero cada instancia nueva que lance el ASG volvería a clonar el repo y las versiones podrían quedar mezcladas.
-- En producción se suele ir un paso más allá: construir la imagen una vez, guardarla en **ECR** y que el user data solo la descargue. Así cada instancia arranca más rápido y corre exactamente el mismo artefacto.
+- Para desplegar otra versión, se construye una AMI nueva con `build-api-ami.sh` y se aplica Terraform. El cambio inicia un instance refresh progresivo; reiniciar con la misma AMI conserva el código anterior.
+- En producción, CI puede automatizar la construcción y validación de la AMI. ECR es otra opción para distribuir y versionar imágenes de contenedores; el despliegue debe fijar la versión del artefacto.
 
 ## IMDSv2 y el hop limit
 
@@ -102,7 +102,7 @@ El **scale-in** (quitar instancias) es más lento todavía, a propósito: quitar
 - **IMDS** (`169.254.169.254`) le da a la instancia su propia metadata y credenciales temporales. IMDSv2 exige primero pedir un token con `PUT`, y eso bloquea ataques de tipo SSRF que solo pueden hacer `GET`.
 - El **hop limit** es el TTL de la respuesta. Desde un contenedor hay un salto de red extra, así que con 1 la respuesta no llega. Con 2 sí.
 
-**En la demo:** si el hop limit está mal, `/api/info` muestra `local-xxxx` en vez del `instance_id` real, y `deploy-api.sh` lo avisa.
+**En la demo:** si el hop limit está mal, `/api/info` muestra `local-xxxx` en vez del `instance_id` real. La prueba de la AMI debe comprobar la metadata antes de desplegarla.
 
 ## Security groups encadenados
 
@@ -198,7 +198,7 @@ La app es una *single page application*. Con OAC, S3 responde **403** cuando un 
 | Demo | Producción |
 |---|---|
 | Instancias en subredes públicas | Subredes privadas + NAT Gateway (uno por AZ) o VPC endpoints |
-| User data clona y construye | Imagen construida en CI, guardada en ECR y versionada |
+| AMI construida desde el backend local | Construcción y validación automatizadas en CI, con artefactos versionados |
 | HTTP entre CloudFront y ALB | Dominio propio, certificado ACM, HTTPS de punta a punta |
 | Prefix list de CloudFront | + header secreto validado en el ALB, o VPC origins con ALB interno |
 | Sin WAF | AWS WAF en CloudFront |

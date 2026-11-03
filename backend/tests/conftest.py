@@ -21,8 +21,14 @@ class FakeStressController(stress.StressController):
         super().__init__()
         self.runs: list[int] = []
 
-    def _run(self, seconds: int) -> None:
-        self.runs.append(seconds)
+    def start(self, seconds: int) -> bool:
+        accepted = super().start(seconds)
+        if accepted:
+            self.runs.append(seconds)
+        return accepted
+
+    def _run(self, seconds: int, cancelled) -> None:
+        cancelled.wait()
 
 
 @pytest.fixture

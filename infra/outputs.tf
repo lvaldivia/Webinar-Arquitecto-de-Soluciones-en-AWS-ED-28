@@ -23,7 +23,8 @@ output "alb_dns_name" {
 
 output "asg_name" {
   description = "Nombre del Auto Scaling Group."
-  value       = aws_autoscaling_group.api.name
+  value       = "${var.prefix}-asg"
+  depends_on  = [aws_iam_instance_profile.ec2]
 }
 
 output "target_group_arn" {
@@ -34,9 +35,29 @@ output "target_group_arn" {
 output "region" {
   description = "Región del despliegue."
   value       = var.region
+  depends_on  = [aws_iam_instance_profile.ec2]
 }
 
 output "aws_profile" {
   description = "Perfil de AWS CLI usado (vacío = credenciales por defecto)."
   value       = var.aws_profile == null ? "" : var.aws_profile
+  depends_on  = [aws_iam_instance_profile.ec2]
+}
+
+# Disponibles tras crear la base, antes de construir la primera AMI/ASG.
+output "builder_subnet_id" {
+  value = aws_subnet.public[0].id
+}
+output "builder_security_group_id" {
+  value = aws_security_group.app.id
+}
+output "builder_instance_profile" {
+  value = aws_iam_instance_profile.ec2.name
+}
+output "api_instance_type" {
+  value      = var.instance_type
+  depends_on = [aws_iam_instance_profile.ec2]
+}
+output "api_ami_id" {
+  value = var.api_ami_id == null ? "" : var.api_ami_id
 }

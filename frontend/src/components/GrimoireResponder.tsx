@@ -10,13 +10,14 @@ import { getInfo } from "../api";
 import { castEffect } from "../effects";
 import { elementFor, isLocalAz } from "../elements";
 import type { InstanceInfo } from "../types";
+import { isServing, STALE_AFTER_MS } from "../instanceState";
+import type { ScalingViewProps } from "../useScalingStatus";
 import { ElementIcon, MagicCircle } from "./Art";
 import { Panel } from "./Panel";
 
 const POLL_INTERVAL_MS = 2000;
 const HISTORY_SIZE = 20;
-const ASG_CPU_TARGET = 50; // objetivo de la política de target tracking
-const STALE_AFTER_MS = 20_000; // una instancia que no responde hace 20 s ya no cuenta
+const ASG_CPU_TARGET = 60;
 
 interface LogEntry {
   id: number;
@@ -30,6 +31,7 @@ interface Counter {
   count: number;
   color: string;
   detail: string;
+  seenAt: number;
 }
 
 /** Último reporte de CPU de cada instancia. */
@@ -50,12 +52,11 @@ function cpuColor(cpu: number): string {
 
 /**
  * "Carga de CPU": muestra en segundos el efecto del modo estrés y el promedio
- * que mira el Auto Scaling Group (con una marca en el objetivo del 50 %).
+ * observado desde las respuestas (el ASG usa muestras de CloudWatch de 10 s).
  */
-function CpuGauges({ reports }: { reports: Record<string, CpuReport> }) {
-  const now = Date.now();
+function CpuGauges({ reports, now, scaling }: { reports: Record<string, CpuReport>; now: number; scaling: ScalingViewProps["scaling"] }) {
   const active = Object.entries(reports)
-    .filter(([, report]) => now - report.seenAt < STALE_AFTER_MS && report.cpu !== null)
+    .filter(([id, report]) => isServing(id, report.seenAt, now, scaling) && now - report.seenAt < STALE_AFTER_MS && report.cpu !== null)
     .sort(([a], [b]) => a.localeCompare(b));
 
   const average = active.length
@@ -65,7 +66,7 @@ function CpuGauges({ reports }: { reports: Record<string, CpuReport> }) {
 
   return (
     <div className="cpu-block">
-      <h3>Carga de CPU · lo que mira el Auto Scaling</h3>
+      <h3>Carga de CPU · observaciones recientes de instancias activas</h3>
       {active.length === 0 && <p className="muted">Sin datos de CPU todavía.</p>}
 
       {active.map(([instanceId, report]) => (
@@ -91,7 +92,7 @@ function CpuGauges({ reports }: { reports: Record<string, CpuReport> }) {
           </div>
           <span className="mono cpu-value">{average} %</span>
           <span className="cpu-stress">
-            {overTarget ? "▲ supera el 50 %: el ASG va a escalar" : `objetivo del ASG: ${ASG_CPU_TARGET} %`}
+            {overTarget ? "▲ supera el 60 % · AWS evalúa muestras de 10 s" : `umbral del ASG: ${ASG_CPU_TARGET} %`}
           </span>
         </div>
       )}
@@ -126,14 +127,19 @@ function TallyBars({ title, items }: { title: string; items: Array<[string, Coun
   );
 }
 
-export function GrimoireResponder() {
+export function GrimoireResponder({ scaling, scalingError }: ScalingViewProps) {
   const [paused, setPaused] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [current, setCurrent] = useState<LogEntry | null>(null);
   const [byInstance, setByInstance] = useState<Record<string, Counter>>({});
-  const [byAz, setByAz] = useState<Record<string, Counter>>({});
   const [cpuReports, setCpuReports] = useState<Record<string, CpuReport>>({});
   const [failures, setFailures] = useState(0);
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const inFlight = useRef(false);
   const nextId = useRef(1);
@@ -167,15 +173,7 @@ export function GrimoireResponder() {
     setCurrent(entry);
     setByInstance((previous) => ({
       ...previous,
-      [instance_id]: { count: (previous[instance_id]?.count ?? 0) + 1, color: element.color, detail: availability_zone },
-    }));
-    setByAz((previous) => ({
-      ...previous,
-      [availability_zone]: {
-        count: (previous[availability_zone]?.count ?? 0) + 1,
-        color: isLocalAz(availability_zone) ? "#d4af37" : element.color,
-        detail: isLocalAz(availability_zone) ? "local" : element.label,
-      },
+      [instance_id]: { count: (previous[instance_id]?.count ?? 0) + 1, color: element.color, detail: availability_zone, seenAt: Date.now() },
     }));
     setCpuReports((previous) => ({
       ...previous,
@@ -199,16 +197,28 @@ export function GrimoireResponder() {
   const reset = () => {
     setLog([]);
     setByInstance({});
-    setByAz({});
     setCpuReports({});
     setFailures(0);
     setCurrent(null);
   };
 
-  const info = current?.info;
+  const latest = current?.info;
+  const info = latest && isServing(latest.instance_id, current.receivedAt.getTime(), now, scaling) ? latest : undefined;
   const element = info ? elementFor(info.availability_zone, info.instance_id) : null;
   const sortedEntries = (record: Record<string, Counter>) =>
     Object.entries(record).sort(([a], [b]) => a.localeCompare(b));
+  const activeInstances = Object.fromEntries(Object.entries(byInstance).filter(([id, counter]) => isServing(id, counter.seenAt, now, scaling)));
+  const byAz: Record<string, Counter> = {};
+  for (const [id, counter] of Object.entries(activeInstances)) {
+    const az = counter.detail;
+    const azElement = elementFor(az, id);
+    byAz[az] = {
+      count: (byAz[az]?.count ?? 0) + counter.count,
+      color: isLocalAz(az) ? "#d4af37" : azElement.color,
+      detail: isLocalAz(az) ? "local" : azElement.label,
+      seenAt: counter.seenAt,
+    };
+  }
 
   return (
     <Panel
@@ -240,7 +250,7 @@ export function GrimoireResponder() {
           className="responder-card"
           style={element ? { borderColor: element.color, boxShadow: `0 0 40px ${element.glow}` } : undefined}
         >
-          {info && element ? (
+          {info && element && current ? (
             <div key={current.id} className="cast-in">
               <MagicCircle color={element.color} className="card-circle" />
               <div className="responder-element" style={{ color: element.color }}>
@@ -265,13 +275,15 @@ export function GrimoireResponder() {
               )}
             </div>
           ) : (
-            <p className="muted">{paused ? "En pausa." : "Invocando al primer grimorio…"}</p>
+            <p className="muted">{paused ? "En pausa." : "Esperando una respuesta de una instancia sana…"}</p>
           )}
         </div>
 
         <div className="tallies">
-          <TallyBars title="Respuestas por instancia" items={sortedEntries(byInstance)} />
-          <TallyBars title="Respuestas por AZ" items={sortedEntries(byAz)} />
+          <TallyBars title="Respuestas de instancias activas" items={sortedEntries(activeInstances)} />
+          <TallyBars title="Respuestas por AZ activa" items={sortedEntries(byAz)} />
+          <p className="muted">Las instancias retiradas salen de esta vista; sus respuestas anteriores quedan en el registro.</p>
+          {scalingError && <p className="error-text">Sin confirmación de AWS: solo se muestran respuestas recientes.</p>}
           {failures > 0 && <p className="error-text">Peticiones fallidas: {failures}</p>}
         </div>
 
@@ -304,7 +316,7 @@ export function GrimoireResponder() {
           </ol>
         </div>
 
-        <CpuGauges reports={cpuReports} />
+        <CpuGauges reports={cpuReports} now={now} scaling={scaling} />
       </div>
     </Panel>
   );

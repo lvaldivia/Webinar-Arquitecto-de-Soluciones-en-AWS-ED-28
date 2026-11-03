@@ -2,14 +2,9 @@
 # Launch template + Auto Scaling Group + política de escalado.
 # =============================================================================
 
-# Última AMI de Amazon Linux 2023 (x86_64), publicada por AWS en SSM.
-data "aws_ssm_parameter" "al2023" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-}
-
 resource "aws_launch_template" "api" {
   name                   = "${var.prefix}-lt"
-  image_id               = data.aws_ssm_parameter.al2023.insecure_value
+  image_id               = var.api_ami_id
   instance_type          = var.instance_type
   vpc_security_group_ids = [aws_security_group.app.id]
   update_default_version = true
@@ -32,11 +27,14 @@ resource "aws_launch_template" "api" {
     enabled = true
   }
 
-  # Mismo flujo que scripts/user-data.sh: clonar el repo y ejecutar setup-instance.sh.
-  user_data = base64encode(templatefile("${path.module}/user-data.sh.tftpl", {
-    repo_url    = var.repo_url
-    repo_branch = var.repo_branch
-  }))
+  # Sin user data: Docker arranca el contenedor ya preparado dentro de la AMI.
+
+  lifecycle {
+    precondition {
+      condition     = var.api_ami_id != null
+      error_message = "Primero construye la AMI con bash scripts/infra-up.sh o bash scripts/build-api-ami.sh."
+    }
+  }
 
   tag_specifications {
     resource_type = "instance"
@@ -59,20 +57,18 @@ resource "aws_autoscaling_group" "api" {
   # Con "ELB", el ASG usa el health check del target group y la reemplaza.
   health_check_type = "ELB"
 
-  # Tiempo para que una instancia nueva arranque (instalar Docker, clonar y
-  # construir la imagen) antes de evaluar su salud. Si es muy corto, el ASG
-  # la mata antes de que termine: ciclo infinito de reemplazos.
-  health_check_grace_period = 300
+  # Gracia para arrancar el sistema y el contenedor antes de evaluar su salud.
+  health_check_grace_period = 120
 
   # Segundos que una instancia nueva tarda en aportar métricas "normales".
-  default_instance_warmup = 120
+  default_instance_warmup = 60
 
   launch_template {
     id      = aws_launch_template.api.id
     version = aws_launch_template.api.latest_version
   }
 
-  # Si cambia el launch template (p. ej. otro repo_url), reemplaza las
+  # Si cambia el launch template (p. ej. otra AMI), reemplaza las
   # instancias de a poco sin cortar el servicio.
   instance_refresh {
     strategy = "Rolling"
@@ -101,17 +97,63 @@ resource "aws_autoscaling_group" "api" {
   }
 }
 
-# Target tracking: el ASG agrega o quita instancias para mantener la CPU
-# promedio del grupo cerca del 50 %.
+# Demo: una muestra de 10 segundos por encima del 60 % agrega una EC2.
+# El warmup evita sumar instancias repetidamente mientras la nueva arranca.
 resource "aws_autoscaling_policy" "cpu" {
-  name                   = "${var.prefix}-cpu-50"
-  autoscaling_group_name = aws_autoscaling_group.api.name
-  policy_type            = "TargetTrackingScaling"
+  name                      = "${var.prefix}-cpu-demo-out"
+  autoscaling_group_name    = aws_autoscaling_group.api.name
+  policy_type               = "StepScaling"
+  adjustment_type           = "ChangeInCapacity"
+  metric_aggregation_type   = "Average"
+  estimated_instance_warmup = 60
 
-  target_tracking_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ASGAverageCPUUtilization"
-    }
-    target_value = 50
+  step_adjustment {
+    metric_interval_lower_bound = 0
+    scaling_adjustment          = 1
   }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cpu_high" {
+  alarm_name          = "${var.prefix}-cpu-demo-high"
+  alarm_description   = "Demo: CPU promedio >60 % durante 10 segundos; agregar una EC2."
+  namespace           = "Grimorios/Demo"
+  metric_name         = "CPUUtilization"
+  statistic           = "Average"
+  period              = 10
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  threshold           = 60
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { AutoScalingGroupName = aws_autoscaling_group.api.name }
+  alarm_actions       = [aws_autoscaling_policy.cpu.arn]
+}
+
+# Retirar una instancia solo después de cinco minutos de poca carga.
+resource "aws_autoscaling_policy" "cpu_in" {
+  name                    = "${var.prefix}-cpu-demo-in"
+  autoscaling_group_name  = aws_autoscaling_group.api.name
+  policy_type             = "StepScaling"
+  adjustment_type         = "ChangeInCapacity"
+  metric_aggregation_type = "Average"
+
+  step_adjustment {
+    metric_interval_upper_bound = 0
+    scaling_adjustment          = -1
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "cpu_low" {
+  alarm_name          = "${var.prefix}-cpu-demo-low"
+  namespace           = "AWS/EC2"
+  metric_name         = "CPUUtilization"
+  statistic           = "Average"
+  period              = 60
+  evaluation_periods  = 5
+  datapoints_to_alarm = 5
+  threshold           = 10
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { AutoScalingGroupName = aws_autoscaling_group.api.name }
+  alarm_actions       = [aws_autoscaling_policy.cpu_in.arn]
 }

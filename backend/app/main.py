@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app import cpu, metadata, spells, stress
+from app import cpu, metadata, scaling, spells, stress
 from app.config import settings
 from app.logging_config import setup_logging
 
@@ -33,7 +33,12 @@ async def lifespan(_app: FastAPI):
     metadata.load_metadata()
     # Medición de CPU en segundo plano (para verla en vivo en el panel A).
     cpu.monitor.start()
-    yield
+    scaling.publisher.start()
+    try:
+        yield
+    finally:
+        stress.controller.stop()
+        scaling.publisher.stop()
 
 
 app = FastAPI(title="Grimorio API", version=settings.app_version, lifespan=lifespan)
@@ -108,6 +113,14 @@ def info() -> dict:
 
 # ---------- Hechizos ----------
 
+@app.get("/api/scaling")
+def scaling_status():
+    try:
+        return scaling.summary()
+    except Exception:
+        logger.warning("No se pudo consultar el estado del escalado", exc_info=True)
+        return JSONResponse(status_code=503, content={"status": "unavailable", "instances": []})
+
 @app.post("/api/spell")
 def cast_spell() -> dict:
     return {**spells.generate_spell(), "caster": caster(), "timestamp": now_iso()}
@@ -148,4 +161,13 @@ def start_stress(body: StressRequest) -> JSONResponse:
             "max_seconds": settings.stress_max_seconds,
             **caster(),
         },
+    )
+
+
+@app.post("/api/stress/stop")
+def stop_stress() -> JSONResponse:
+    finished = stress.controller.stop()
+    return JSONResponse(
+        status_code=200 if finished else 202,
+        content={"status": "stopped" if finished else "stopping", "remaining_seconds": 0, **caster()},
     )

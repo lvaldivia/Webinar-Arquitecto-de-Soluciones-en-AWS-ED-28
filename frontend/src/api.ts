@@ -4,7 +4,7 @@
 // le pide todo a CloudFront (mismo dominio) y CloudFront enruta /api/* al ALB.
 // Al ser el mismo origen, no hace falta configurar CORS.
 
-import type { InstanceInfo, Spell, StressResponse } from "./types";
+import type { InstanceInfo, ScalingStatus, Spell, StressResponse, StressStopResponse } from "./types";
 
 const TIMEOUT_MS = 4000;
 
@@ -57,6 +57,12 @@ export async function getInfo(): Promise<InstanceInfo> {
   return response.data as InstanceInfo;
 }
 
+export async function getScalingStatus(): Promise<ScalingStatus> {
+  const response = await request("/api/scaling");
+  if (!response.ok) fail(response);
+  return response.data as ScalingStatus;
+}
+
 export async function castSpell(): Promise<Spell> {
   const response = await request("/api/spell", { method: "POST" });
   if (!response.ok) fail(response);
@@ -71,6 +77,41 @@ export async function startStress(seconds: number): Promise<StressResponse> {
   // 202 = aceptado, 409 = esa instancia ya está estresada. Ambos son respuestas válidas.
   if (response.status !== 202 && response.status !== 409) fail(response);
   return response.data as StressResponse;
+}
+
+export async function stopStress(): Promise<StressStopResponse> {
+  const response = await request("/api/stress/stop", { method: "POST" });
+  if (response.status !== 200 && response.status !== 202) fail(response);
+  return response.data as StressStopResponse;
+}
+
+/** Cada respuesta confirma una EC2; no confundimos parar una con parar el grupo. */
+export async function stopStressOnInstances(ids: string[], onStopped: (id: string) => void) {
+  const targets = new Set(ids);
+  const stopped = new Set<string>();
+  for (let round = 0; round < 6; round++) {
+    const batch = await Promise.allSettled(Array.from({ length: 4 }, () => stopStress()));
+    for (const result of batch) {
+      if (result.status === "fulfilled" && result.value.status === "stopped") {
+        if (!stopped.has(result.value.instance_id)) {
+          stopped.add(result.value.instance_id);
+          onStopped(result.value.instance_id);
+        }
+      }
+    }
+    if (stopped.size > 0 && [...targets].every((id) => stopped.has(id))) break;
+  }
+  let pending = [...targets].filter((id) => !stopped.has(id));
+  if (pending.length > 0) {
+    try {
+      const current = await getScalingStatus();
+      if (current.status === "ok") {
+        const ready = new Set(current.instances.filter((item) => item.state === "ready").map((item) => item.instance_id));
+        pending = pending.filter((id) => ready.has(id));
+      }
+    } catch { /* Conservamos los pendientes si no podemos confirmar su retirada. */ }
+  }
+  return { stopped: [...stopped], pending };
 }
 
 export interface CacheProbe {

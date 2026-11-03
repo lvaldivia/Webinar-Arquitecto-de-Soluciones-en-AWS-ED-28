@@ -66,3 +66,17 @@ def test_cpu_usage_is_computed_from_proc_stat(tmp_path):
 
 def test_cpu_reading_without_proc_stat_returns_none(tmp_path):
     assert cpu.read_cpu_times(str(tmp_path / "no-existe")) is None
+
+
+def test_stop_cancels_real_workers_even_immediately_after_start(monkeypatch):
+    monkeypatch.setattr(stress.os, "cpu_count", lambda: 1)
+    controller = stress.StressController()
+    try:
+        assert controller.start(30)
+        assert controller.stop()
+        assert not controller.is_active()
+        assert controller.remaining_seconds() == 0
+        assert controller.start(30)
+        assert controller.stop()
+    finally:
+        controller.stop()
