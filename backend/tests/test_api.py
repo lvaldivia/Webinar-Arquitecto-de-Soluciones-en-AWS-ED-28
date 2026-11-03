@@ -27,6 +27,13 @@ def test_info_returns_instance_metadata(client):
     assert body["version"] == settings.app_version
     assert body["hostname"]
     assert body["timestamp"]
+    assert "cpu_percent" in body
+    assert body["stress_remaining_seconds"] == 0
+
+
+def test_info_reports_active_stress(client):
+    client.post("/api/stress", json={"seconds": 60})
+    assert client.get("/api/info").json()["stress_remaining_seconds"] > 0
 
 
 def test_spell_has_valid_fields(client):

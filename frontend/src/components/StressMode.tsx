@@ -73,6 +73,21 @@ export function StressMode() {
         {loading ? "Invocando…" : "🔥 Desatar estrés"}
       </button>
 
+      <div className="stress-steps">
+        <strong>Qué va a pasar:</strong>
+        <ol>
+          <li>
+            <strong>En segundos:</strong> en el panel A, “Carga de CPU”, la barra de la instancia sube al 100 %.
+          </li>
+          <li>
+            <strong>Cuando el PROMEDIO pasa la marca del 50 %:</strong> CloudWatch dispara la alarma del ASG.
+          </li>
+          <li>
+            <strong>En 5–10 min:</strong> aparece una instancia nueva en el panel A (y en ASG → Activity).
+          </li>
+        </ol>
+      </div>
+
       <div className="warning">
         <strong>⏳ El ASG no reacciona al instante.</strong> CloudWatch publica la CPU cada minuto, la alarma necesita
         varios datos seguidos por encima del 50 % y la instancia nueva tiene que arrancar y pasar el health check.

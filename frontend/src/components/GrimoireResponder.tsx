@@ -15,6 +15,8 @@ import { Panel } from "./Panel";
 
 const POLL_INTERVAL_MS = 2000;
 const HISTORY_SIZE = 20;
+const ASG_CPU_TARGET = 50; // objetivo de la política de target tracking
+const STALE_AFTER_MS = 20_000; // una instancia que no responde hace 20 s ya no cuenta
 
 interface LogEntry {
   id: number;
@@ -30,7 +32,72 @@ interface Counter {
   detail: string;
 }
 
+/** Último reporte de CPU de cada instancia. */
+interface CpuReport {
+  az: string;
+  cpu: number | null;
+  stressRemaining: number;
+  seenAt: number;
+}
+
 const formatTime = (date: Date) => date.toLocaleTimeString("es", { hour12: false });
+
+function cpuColor(cpu: number): string {
+  if (cpu >= 80) return "#ff4e2a";
+  if (cpu >= ASG_CPU_TARGET) return "#ffb347";
+  return "#3ddc97";
+}
+
+/**
+ * "Carga de CPU": muestra en segundos el efecto del modo estrés y el promedio
+ * que mira el Auto Scaling Group (con una marca en el objetivo del 50 %).
+ */
+function CpuGauges({ reports }: { reports: Record<string, CpuReport> }) {
+  const now = Date.now();
+  const active = Object.entries(reports)
+    .filter(([, report]) => now - report.seenAt < STALE_AFTER_MS && report.cpu !== null)
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  const average = active.length
+    ? Math.round(active.reduce((sum, [, report]) => sum + (report.cpu ?? 0), 0) / active.length)
+    : null;
+  const overTarget = average !== null && average > ASG_CPU_TARGET;
+
+  return (
+    <div className="cpu-block">
+      <h3>Carga de CPU · lo que mira el Auto Scaling</h3>
+      {active.length === 0 && <p className="muted">Sin datos de CPU todavía.</p>}
+
+      {active.map(([instanceId, report]) => (
+        <div key={instanceId} className="cpu-row">
+          <span className="mono cpu-name">{instanceId}</span>
+          <span className="muted">{report.az}</span>
+          <div className="bar cpu-bar">
+            <div className="bar-fill" style={{ width: `${report.cpu}%`, background: cpuColor(report.cpu ?? 0) }} />
+            <div className="target-marker" style={{ left: `${ASG_CPU_TARGET}%` }} />
+          </div>
+          <span className="mono cpu-value">{Math.round(report.cpu ?? 0)} %</span>
+          <span className="cpu-stress">{report.stressRemaining > 0 ? `🔥 estrés ${report.stressRemaining} s` : ""}</span>
+        </div>
+      ))}
+
+      {average !== null && (
+        <div className={`cpu-row cpu-average ${overTarget ? "over-target" : ""}`}>
+          <span className="cpu-name">PROMEDIO</span>
+          <span className="muted">{active.length} inst.</span>
+          <div className="bar cpu-bar">
+            <div className="bar-fill" style={{ width: `${average}%`, background: cpuColor(average) }} />
+            <div className="target-marker" style={{ left: `${ASG_CPU_TARGET}%` }} />
+          </div>
+          <span className="mono cpu-value">{average} %</span>
+          <span className="cpu-stress">
+            {overTarget ? "▲ supera el 50 %: el ASG va a escalar" : `objetivo del ASG: ${ASG_CPU_TARGET} %`}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TallyBars({ title, items }: { title: string; items: Array<[string, Counter]> }) {
   const total = items.reduce((sum, [, item]) => sum + item.count, 0);
@@ -65,6 +132,7 @@ export function GrimoireResponder() {
   const [current, setCurrent] = useState<LogEntry | null>(null);
   const [byInstance, setByInstance] = useState<Record<string, Counter>>({});
   const [byAz, setByAz] = useState<Record<string, Counter>>({});
+  const [cpuReports, setCpuReports] = useState<Record<string, CpuReport>>({});
   const [failures, setFailures] = useState(0);
 
   const inFlight = useRef(false);
@@ -109,6 +177,15 @@ export function GrimoireResponder() {
         detail: isLocalAz(availability_zone) ? "local" : element.label,
       },
     }));
+    setCpuReports((previous) => ({
+      ...previous,
+      [instance_id]: {
+        az: availability_zone,
+        cpu: entry.info?.cpu_percent ?? null,
+        stressRemaining: entry.info?.stress_remaining_seconds ?? 0,
+        seenAt: Date.now(),
+      },
+    }));
     castEffect(element.name, cardRef.current);
   }, []);
 
@@ -123,6 +200,7 @@ export function GrimoireResponder() {
     setLog([]);
     setByInstance({});
     setByAz({});
+    setCpuReports({});
     setFailures(0);
     setCurrent(null);
   };
@@ -225,6 +303,8 @@ export function GrimoireResponder() {
             })}
           </ol>
         </div>
+
+        <CpuGauges reports={cpuReports} />
       </div>
     </Panel>
   );

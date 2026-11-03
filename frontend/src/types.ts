@@ -12,6 +12,10 @@ export interface InstanceInfo extends Caster {
   hostname: string;
   version: string;
   timestamp: string;
+  /** % de CPU de la instancia (null si no se puede medir). */
+  cpu_percent: number | null;
+  /** Segundos que le quedan al "modo estrés" en esta instancia (0 = sin estrés). */
+  stress_remaining_seconds: number;
 }
 
 export interface Spell {

@@ -3,7 +3,7 @@
 import time
 import urllib.error
 
-from app import metadata, stress
+from app import cpu, metadata, stress
 
 
 def test_imdsv2_requests_token_first_and_uses_it(monkeypatch):
@@ -50,3 +50,19 @@ def test_burn_cpu_stops_after_given_seconds():
     start = time.monotonic()
     stress.burn_cpu(0.1)
     assert 0.1 <= time.monotonic() - start < 1.0
+
+
+def test_cpu_usage_is_computed_from_proc_stat(tmp_path):
+    stat_file = tmp_path / "stat"
+    # user nice system idle iowait irq softirq steal
+    stat_file.write_text("cpu  100 0 100 800 0 0 0 0\ncpu0 1 2 3 4\n", encoding="utf-8")
+    before = cpu.read_cpu_times(str(stat_file))
+    assert before == (800, 1000)
+
+    # Pasan 100 ticks: 75 ocupados y 25 ociosos -> 75 % de CPU
+    after = (before[0] + 25, before[1] + 100)
+    assert cpu.usage_percent(before, after) == 75.0
+
+
+def test_cpu_reading_without_proc_stat_returns_none(tmp_path):
+    assert cpu.read_cpu_times(str(tmp_path / "no-existe")) is None

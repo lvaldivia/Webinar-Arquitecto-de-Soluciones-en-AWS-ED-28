@@ -3,7 +3,7 @@
 Rutas:
   GET  /health          -> health check del ALB (liviano, sin dependencias)
   GET  /api/health      -> lo mismo, pero accesible vía CloudFront (/api/*)
-  GET  /api/info        -> qué instancia y AZ respondió
+  GET  /api/info        -> qué instancia y AZ respondió (y su % de CPU)
   POST /api/spell       -> genera un hechizo aleatorio
   POST /api/stress      -> sube la CPU para disparar el Auto Scaling
   GET  /api/grimoires   -> lista estática de grimorios de ejemplo
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app import metadata, spells, stress
+from app import cpu, metadata, spells, stress
 from app.config import settings
 from app.logging_config import setup_logging
 
@@ -31,6 +31,8 @@ logger = logging.getLogger("app")
 async def lifespan(_app: FastAPI):
     # Consultamos IMDS una sola vez al arrancar y lo dejamos en memoria.
     metadata.load_metadata()
+    # Medición de CPU en segundo plano (para verla en vivo en el panel A).
+    cpu.monitor.start()
     yield
 
 
@@ -97,6 +99,10 @@ def info() -> dict:
         "hostname": socket.gethostname(),
         "version": settings.app_version,
         "timestamp": now_iso(),
+        # Carga actual de la instancia: deja ver el "modo estrés" en segundos,
+        # mucho antes de que el Auto Scaling reaccione.
+        "cpu_percent": cpu.monitor.percent,
+        "stress_remaining_seconds": stress.controller.remaining_seconds(),
     }
 
 

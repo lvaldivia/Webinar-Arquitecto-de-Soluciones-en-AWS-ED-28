@@ -470,6 +470,84 @@ h3 {
   box-shadow: 0 0 8px currentColor;
 }
 
+/* Carga de CPU (ocupa todo el ancho del panel A) */
+
+.cpu-block {
+  grid-column: 1 / -1;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+
+.cpu-block h3 {
+  font-size: 0.95rem;
+  color: var(--gold);
+  margin-bottom: 10px;
+}
+
+.cpu-row {
+  display: grid;
+  grid-template-columns: minmax(150px, auto) 90px 1fr 60px minmax(150px, auto);
+  gap: 12px;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 0.9rem;
+}
+
+.cpu-bar {
+  position: relative;
+  height: 16px;
+  overflow: visible;
+}
+
+.cpu-bar .bar-fill {
+  transition: width 0.8s ease, background 0.8s ease;
+}
+
+/* Línea vertical en el 50 %: el objetivo del target tracking. */
+.target-marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--gold-soft);
+  box-shadow: 0 0 6px var(--gold);
+}
+
+.cpu-value {
+  text-align: right;
+  font-weight: 600;
+}
+
+.cpu-stress {
+  color: #ffb347;
+  font-weight: 600;
+}
+
+.cpu-average {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 700;
+}
+
+.cpu-average.over-target {
+  background: rgba(255, 78, 42, 0.12);
+  box-shadow: 0 0 18px rgba(255, 78, 42, 0.25);
+}
+
+.stress-steps {
+  font-size: 0.88rem;
+}
+
+.stress-steps ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* ---------- Panel B ---------- */
 
 .spell-card {
@@ -724,6 +802,16 @@ h3 {
   }
   .responder-layout {
     grid-template-columns: 1fr;
+  }
+  .cpu-row {
+    grid-template-columns: 1fr 50px;
+  }
+  .cpu-row .muted,
+  .cpu-stress {
+    grid-column: 1 / -1;
+  }
+  .cpu-bar {
+    grid-column: 1;
   }
   .hero {
     flex-direction: column;
