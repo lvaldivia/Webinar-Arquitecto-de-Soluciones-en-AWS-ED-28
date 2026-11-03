@@ -30,11 +30,15 @@ fi
 
 cd "$REPO_DIR"
 
+# cloud-init ejecuta el user data SIN la variable HOME, y git/docker la necesitan.
+export HOME="${HOME:-/root}"
+
 # ---------- Código ----------
 if [[ "${SKIP_PULL:-0}" != "1" ]]; then
   log "Actualizando código (git pull)..."
-  git config --global --add safe.directory "$REPO_DIR"
-  git pull --ff-only
+  # -c safe.directory: el repo puede pertenecer a otro usuario (lo clonó root
+  # desde el user data). Se pasa solo para este comando, sin tocar la config global.
+  git -c safe.directory="$REPO_DIR" pull --ff-only
 fi
 
 # ---------- Configuración ----------
