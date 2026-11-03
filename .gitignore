@@ -1,0 +1,32 @@
+# Variables de entorno locales (nunca se suben)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Node / Vite
+node_modules/
+dist/
+*.local
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Terraform: el estado contiene IDs de cuenta y ARNs reales. NUNCA se sube.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+# Tus valores (perfil, repo); se versiona solo el ejemplo.
+*.tfvars
+!*.tfvars.example

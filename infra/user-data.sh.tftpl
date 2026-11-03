@@ -1,0 +1,12 @@
+#!/bin/bash
+# User data generado por Terraform (mismo flujo que scripts/user-data.sh).
+# Se ejecuta una vez, como root, al arrancar cada instancia del ASG.
+# Log: /var/log/cloud-init-output.log
+set -euxo pipefail
+
+REPO_URL="${repo_url}"
+BRANCH="${repo_branch}"
+
+dnf install -y git
+git clone --depth 1 --branch "$BRANCH" "$REPO_URL" /opt/grimorios
+bash /opt/grimorios/scripts/setup-instance.sh

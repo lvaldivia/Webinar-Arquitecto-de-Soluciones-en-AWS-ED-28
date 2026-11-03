@@ -1,0 +1,14 @@
+# Copia este archivo como terraform.tfvars y ajusta los valores.
+# terraform.tfvars está en .gitignore: no se sube al repo.
+
+repo_url = "https://github.com/TU-USUARIO/TU-REPO.git"
+
+# Perfil de AWS CLI (aws configure --profile <nombre>). Quita la línea para usar el default.
+aws_profile = "default"
+
+# region        = "us-east-1"
+# prefix        = "grimorios"
+# instance_type = "t3.micro"
+# tags = {
+#   Curso = "arquitectura-aws"
+# }

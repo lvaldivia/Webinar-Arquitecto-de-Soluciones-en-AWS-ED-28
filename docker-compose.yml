@@ -1,0 +1,40 @@
+# Desarrollo local: simula la arquitectura de AWS en tu máquina.
+#
+#   Navegador → web (nginx, hace de "CloudFront")  ─┬─ /        → archivos estáticos ("S3")
+#                                                    └─ /api/*  → api (réplicas, hacen de "ASG")
+#
+# Uso:
+#   docker compose up --build                 # 1 réplica de la API
+#   docker compose up --build --scale api=3   # 3 réplicas: nginx reparte entre ellas
+#
+# Abre http://localhost:8080
+#
+# Las variables (APP_VERSION, STRESS_MAX_SECONDS, LOG_LEVEL) se toman del
+# archivo .env si existe (copia .env.example), o de los valores por defecto.
+
+name: grimorios
+
+services:
+  api:
+    build: ./backend
+    # Sin "ports": la API no se publica al host, igual que en AWS las
+    # instancias solo reciben tráfico desde el ALB. Eso además permite
+    # escalarla con --scale sin choques de puertos.
+    expose:
+      - "8080"
+    environment:
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      STRESS_MAX_SECONDS: ${STRESS_MAX_SECONDS:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        # Espera a que el HEALTHCHECK del Dockerfile de la API pase,
+        # como el ALB que solo envía tráfico a targets "healthy".
+        condition: service_healthy
+    restart: unless-stopped

@@ -1,0 +1,7 @@
+{
+  "name": "Grimorio del Espejo Lunar",
+  "leaves": 4,
+  "message": "Este archivo vive en S3. Si CloudFront lo tiene en su caché, ni siquiera llega a preguntarle a S3.",
+  "lesson": "Miss = CloudFront fue al origen (S3). Hit = lo sirvió directamente desde la ubicación edge más cercana.",
+  "version": 1
+}
