@@ -64,7 +64,8 @@ fi
 echo
 echo "== Caché de CloudFront: $URL/assets/grimorio.json"
 for attempt in 1 2; do
-  x_cache="$(curl -s -I --max-time 5 "$URL/assets/grimorio.json" | header_value x-cache || true)"
+  # GET (como el navegador), no HEAD: un HEAD con Miss no guarda el objeto en la caché.
+  x_cache="$(curl -s -D - -o /dev/null --max-time 5 "$URL/assets/grimorio.json" | header_value x-cache || true)"
   echo "   Intento $attempt: ${x_cache:-sin CloudFront (local)}"
   sleep 1
 done
